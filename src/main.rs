@@ -6,12 +6,12 @@ const CAR_COUNT: usize = 1;
 const WINDOW_WIDTH: f32 = 1280.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 
-const BOUNDARY_THICKNESS: f32 = 20.0;
+const BOUNDARY_THICKNESS: f32 = 12.0;
 const CAR_WIDTH: f32 = 30.0;
 const CAR_LENGTH: f32 = 60.0;
 const CAR_RADIUS: f32 = 25.0;
 
-const START_POSITION: Vec2 = Vec2::new(-350.0, 0.0);
+const START_POSITION: Vec2 = Vec2::new(-440.0, 0.0);
 const START_ROTATION: f32 = 0.0;
 // =======================================================
 
@@ -88,78 +88,85 @@ fn setup(mut commands: Commands) {
     spawn_starting_line(&mut commands);
 }
 
-fn spawn_complex_track(commands: &mut Commands) {
-    // Create a complex stadium-like track with varied sections
-    // This track has: straight sections, tight turns, wide turns, and chicanes
-    
-    let mut boundaries = Vec::new();
-    
-    // Track parameters - creates an interesting oval with complexity
-    let track_width = 120.0; // Width of the drivable area
-    
-    // Define track centerline points (counter-clockwise)
-    // This creates a complex shape with varied turns
-    let track_points = vec![
-        // Bottom straight
-        Vec2::new(-400.0, -150.0),
-        Vec2::new(-200.0, -150.0),
-        // Right side - gentle curve up
-        Vec2::new(0.0, -100.0),
-        Vec2::new(150.0, 0.0),
-        Vec2::new(200.0, 150.0),
-        // Top straight with chicane
-        Vec2::new(100.0, 250.0),
-        Vec2::new(-100.0, 250.0),
-        Vec2::new(-150.0, 200.0), // Dip inward
-        Vec2::new(-200.0, 250.0), // Back out
-        Vec2::new(-350.0, 200.0),
-        // Left side curve down
-        Vec2::new(-450.0, 100.0),
-        Vec2::new(-450.0, -50.0),
-        // Back to start
-        Vec2::new(-400.0, -150.0),
-    ];
-    
-    // Generate boundaries from track centerline
-    for i in 0..track_points.len() {
-        let p1 = track_points[i];
-        let p2 = track_points[(i + 1) % track_points.len()];
-        
-        // Calculate segment direction and length
-        let direction = (p2 - p1).normalize();
-        let length = (p2 - p1).length();
-        
-        // Calculate perpendicular (for boundary offset)
-        let perpendicular = Vec2::new(-direction.y, direction.x);
-        
-        // Calculate angle for rotation
-        let angle = direction.y.atan2(direction.x);
-        
-        // Outer boundary
-        let outer_pos = p1 + perpendicular * (track_width / 2.0 + BOUNDARY_THICKNESS / 2.0);
-        boundaries.push((outer_pos, Vec2::new(length + 5.0, BOUNDARY_THICKNESS), angle));
-        
-        // Inner boundary
-        let inner_pos = p1 - perpendicular * (track_width / 2.0 + BOUNDARY_THICKNESS / 2.0);
-        boundaries.push((inner_pos, Vec2::new(length + 5.0, BOUNDARY_THICKNESS), angle));
-    }
-    
-    // Spawn boundary segments
-    for (pos, size, rotation) in boundaries {
+fn spawn_boundary_loop(commands: &mut Commands, points: &[Vec2], color: Color) {
+    let count = points.len();
+
+    for i in 0..count {
+        let p1 = points[i];
+        let p2 = points[(i + 1) % count];
+
+        let segment = p2 - p1;
+        let length = segment.length();
+        let midpoint = (p1 + p2) * 0.5;
+        let angle = segment.y.atan2(segment.x);
+
         commands.spawn((
             SpriteBundle {
                 sprite: Sprite {
-                    color: Color::DARK_GRAY,
-                    custom_size: Some(size),
+                    color,
+                    custom_size: Some(Vec2::new(length, BOUNDARY_THICKNESS)),
                     ..default()
                 },
-                transform: Transform::from_translation(pos.extend(0.0))
-                    .with_rotation(Quat::from_rotation_z(rotation)),
+                transform: Transform::from_translation(midpoint.extend(0.0))
+                    .with_rotation(Quat::from_rotation_z(angle)),
                 ..default()
             },
-            TrackBoundary { size },
+            TrackBoundary {
+                size: Vec2::new(length, BOUNDARY_THICKNESS),
+            },
         ));
     }
+}
+
+fn spawn_complex_track(commands: &mut Commands) {
+    let track_width = 100.0;
+
+    let centerline = vec![
+        Vec2::new(-300.0, -200.0),
+        Vec2::new(-50.0, -220.0),
+        Vec2::new(200.0, -200.0),
+        Vec2::new(340.0, -166.0),
+        Vec2::new(425.0, -67.0),
+        Vec2::new(450.0, 0.0),
+        Vec2::new(200.0, 200.0),
+        Vec2::new(-100.0, 200.0),
+        Vec2::new(-200.0, 100.0),
+        Vec2::new(-300.0, 200.0),
+        Vec2::new(-450.0, 0.0),
+    ];
+
+    let mut inner_points = Vec::new();
+    let mut outer_points = Vec::new();
+
+    let count = centerline.len();
+
+    for i in 0..count {
+        let prev = centerline[(i + count - 1) % count];
+        let curr = centerline[i];
+        let next = centerline[(i + 1) % count];
+
+        let dir1 = (curr - prev).normalize();
+        let dir2 = (next - curr).normalize();
+
+        let normal1 = Vec2::new(-dir1.y, dir1.x);
+        let normal2 = Vec2::new(-dir2.y, dir2.x);
+
+        // Average normals for mitered corner
+        let mut miter = (normal1 + normal2).normalize();
+
+        // Prevent extreme stretching on sharp corners
+        if miter.length_squared() < 0.001 {
+            miter = normal1;
+        }
+
+        let scale = track_width / 2.0 / miter.dot(normal1);
+
+        outer_points.push(curr + miter * scale);
+        inner_points.push(curr - miter * scale);
+    }
+
+    spawn_boundary_loop(commands, &outer_points, Color::DARK_GRAY);
+    spawn_boundary_loop(commands, &inner_points, Color::GRAY);
 }
 
 fn spawn_starting_line(commands: &mut Commands) {
@@ -211,9 +218,9 @@ fn car_physics(
         }
 
         let steer_dir = if keyboard.pressed(KeyCode::KeyA) {
-            1.0
+            0.01 * ((car.velocity.x).powf(2.0) + (car.velocity.y).powf(2.0)).sqrt()
         } else if keyboard.pressed(KeyCode::KeyD) {
-            -1.0
+            -0.01 * ((car.velocity.x).powf(2.0) + (car.velocity.y).powf(2.0)).sqrt()
         } else {
             0.0
         };
