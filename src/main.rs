@@ -1,10 +1,15 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
+use rusqlite::{Connection, params};
 
 // ==================== CONFIGURATION ====================
 const CAR_COUNT: usize = 1;
 const WINDOW_WIDTH: f32 = 1280.0;
 const WINDOW_HEIGHT: f32 = 720.0;
+
+const MAX_RAY_DISTANCE: f32 = 600.0;
+const RADIAL_RAYS: usize = 12;
+const FORWARD_RAYS: usize = 6;
 
 const BOUNDARY_THICKNESS: f32 = 12.0;
 const CAR_WIDTH: f32 = 30.0;
@@ -14,6 +19,26 @@ const CAR_RADIUS: f32 = 25.0;
 const START_POSITION: Vec2 = Vec2::new(-440.0, 0.0);
 const START_ROTATION: f32 = 0.0;
 // =======================================================
+
+#[derive(Component)]
+struct RaySensor {
+    angle: f32,
+    distance: f32,
+}
+
+#[derive(Component)]
+struct Checkpoint {
+    id: usize,
+}
+
+struct Db {
+    conn: Connection,
+}
+
+#[derive(Resource)]
+struct RewardState {
+    last_checkpoint: Vec<usize>,
+}
 
 #[derive(Component)]
 struct Car {
@@ -32,6 +57,20 @@ struct TrackBoundary {
 struct StartingLine;
 
 fn main() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    conn.execute(
+        "CREATE TABLE ai_state (
+            car_id INTEGER,
+            vel_x REAL,
+            vel_y REAL,
+            forward_x REAL,
+            forward_y REAL,
+            reward REAL
+        )",
+        [],
+    ).unwrap();
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -41,8 +80,18 @@ fn main() {
             }),
             ..default()
         }))
+        .insert_non_send_resource(Db { conn })
+        .insert_resource(RewardState {
+            last_checkpoint: vec![0; CAR_COUNT],
+        })
+        .add_systems(Update, (
+            car_physics,
+            handle_boundary_collisions,
+            update_rays,
+            reward_system,
+            log_ai_state,
+        ))
         .add_systems(Startup, setup)
-        .add_systems(Update, (car_physics, handle_boundary_collisions))
         .run();
 }
 
@@ -64,7 +113,9 @@ fn setup(mut commands: Commands) {
             Color::hsl((i as f32 / CAR_COUNT as f32) * 360.0, 1.0, 0.5)
         };
 
-        commands.spawn((
+        
+
+        let car_entity = commands.spawn((
             SpriteBundle {
                 sprite: Sprite {
                     color,
@@ -81,11 +132,30 @@ fn setup(mut commands: Commands) {
                 skid_timer: 0.0,
                 car_id: i,
             },
-        ));
+        )).id();
+
+        spawn_rays(&mut commands, car_entity);
     }
 
     spawn_complex_track(&mut commands);
     spawn_starting_line(&mut commands);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, -180.0), 0);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, 220.0), 1);
+}
+
+fn spawn_checkpoint(commands: &mut Commands, pos: Vec2, id: usize) {
+    commands.spawn((
+        Checkpoint { id },
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::BLUE,
+                custom_size: Some(Vec2::new(120.0, 10.0)),
+                ..default()
+            },
+            transform: Transform::from_translation(pos.extend(0.0)),
+            ..default()
+        }
+    ));
 }
 
 fn spawn_boundary_loop(commands: &mut Commands, points: &[Vec2], color: Color) {
@@ -128,10 +198,14 @@ fn spawn_complex_track(commands: &mut Commands) {
         Vec2::new(340.0, -166.0),
         Vec2::new(425.0, -67.0),
         Vec2::new(450.0, 0.0),
+        Vec2::new(415.0, 50.0),
+        Vec2::new(280.0, 170.0),
         Vec2::new(200.0, 200.0),
-        Vec2::new(-100.0, 200.0),
-        Vec2::new(-200.0, 100.0),
-        Vec2::new(-300.0, 200.0),
+        Vec2::new(-100.0, 250.0),
+        Vec2::new(-120.0, 245.0),
+        Vec2::new(-170.0, 222.0),
+        Vec2::new(-300.0, 250.0),
+        Vec2::new(-400.0, 200.0),
         Vec2::new(-450.0, 0.0),
     ];
 
@@ -312,6 +386,8 @@ fn handle_boundary_collisions(
             let distance = to_car.length();
 
             if distance < CAR_RADIUS {
+                let penalty = -car.velocity.length() * 0.2;
+                println!("Penalty {}", penalty);
                 car_transform.translation = START_POSITION.extend(0.0);
                 car_transform.rotation = Quat::from_rotation_z(START_ROTATION);
                 car.velocity = Vec2::ZERO;
@@ -320,5 +396,195 @@ fn handle_boundary_collisions(
                 break;
             }
         }
+    }
+}
+
+fn spawn_rays(commands: &mut Commands, car_entity: Entity) {
+    // 12 radial
+    for i in 0..RADIAL_RAYS {
+        let angle = i as f32 / RADIAL_RAYS as f32 * 2.0 * PI;
+        commands.spawn((
+            RaySensor { angle, distance: 0.0 },
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::YELLOW,
+                    custom_size: Some(Vec2::new(2.0, 2.0)),
+                    ..default()
+                },
+                ..default()
+            },
+        )).set_parent(car_entity);
+    }
+
+    // Forward focused rays
+    for i in 0..FORWARD_RAYS {
+        let spread = PI / 3.0;
+        let angle = -spread/2.0 + i as f32/(FORWARD_RAYS-1) as f32 * spread;
+
+        commands.spawn((
+            RaySensor { angle, distance: 0.0 },
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::ORANGE,
+                    custom_size: Some(Vec2::new(2.0, 2.0)),
+                    ..default()
+                },
+                ..default()
+            },
+        )).set_parent(car_entity);
+    }
+}
+
+fn update_rays(
+    mut ray_query: Query<
+        (&mut RaySensor, &mut Transform, &Parent),
+        (Without<Car>, Without<TrackBoundary>)
+>   ,
+
+    car_query: Query<&Transform, With<Car>>,
+
+    boundary_query: Query<(&Transform, &TrackBoundary)>,
+) {
+    for (mut ray, mut ray_transform, parent) in ray_query.iter_mut() {
+        if let Ok(car_transform) = car_query.get(parent.get()) {
+            let car_pos = car_transform.translation.truncate();
+            let forward = (car_transform.rotation * Vec3::Y).truncate();
+
+            let ray_dir = Quat::from_rotation_z(ray.angle)
+                .mul_vec3(forward.extend(0.0))
+                .truncate()
+                .normalize();
+
+            let mut min_dist = MAX_RAY_DISTANCE;
+
+            for (b_transform, b_size) in boundary_query.iter() {
+                let hit = ray_rect_intersection(
+                    car_pos,
+                    ray_dir,
+                    b_transform,
+                    b_size.size
+                );
+
+                if let Some(d) = hit {
+                    if d < min_dist {
+                        min_dist = d;
+                    }
+                }
+            }
+
+            ray.distance = min_dist;
+
+            ray_transform.translation =
+                (ray_dir * min_dist).extend(0.0);
+
+            ray_transform.scale = Vec3::new(1.0, min_dist, 1.0);
+        }
+    }
+}
+
+fn reward_system(
+    mut reward_state: ResMut<RewardState>,
+    mut car_query: Query<(&Transform, &mut Car)>,
+    checkpoint_query: Query<(&Transform, &Checkpoint)>,
+) {
+    for (car_transform, car) in car_query.iter_mut() {
+        let car_pos = car_transform.translation.truncate();
+        let _speed = car.velocity.length();
+
+        for (cp_transform, cp) in checkpoint_query.iter() {
+            if car_pos.distance(cp_transform.translation.truncate()) < 60.0 {
+                if reward_state.last_checkpoint[car.car_id] != cp.id {
+                    reward_state.last_checkpoint[car.car_id] = cp.id;
+
+                    println!("Reward +100");
+                }
+            }
+        }
+    }
+}
+
+fn log_ai_state(
+    db: NonSend<Db>,
+    car_query: Query<(&Transform, &Car)>,
+) {
+    for (transform, car) in car_query.iter() {
+        let forward = (transform.rotation * Vec3::Y).truncate();
+
+        db.conn.execute(
+            "INSERT INTO ai_state
+            (car_id, vel_x, vel_y, forward_x, forward_y, reward)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                car.car_id as i32,
+                car.velocity.x,
+                car.velocity.y,
+                forward.x,
+                forward.y,
+                0.0
+            ],
+        ).unwrap();
+    }
+}
+
+fn ray_rect_intersection(
+    ray_origin: Vec2,
+    ray_dir: Vec2,
+    rect_transform: &Transform,
+    rect_size: Vec2,
+) -> Option<f32> {
+
+    let rect_pos = rect_transform.translation.truncate();
+    let rotation = rect_transform.rotation.to_euler(EulerRot::XYZ).2;
+
+    let cos = rotation.cos();
+    let sin = rotation.sin();
+
+    // Transform ray into rectangle local space
+    let rel = ray_origin - rect_pos;
+    let local_origin = Vec2::new(
+        rel.x * cos + rel.y * sin,
+        -rel.x * sin + rel.y * cos,
+    );
+
+    let local_dir = Vec2::new(
+        ray_dir.x * cos + ray_dir.y * sin,
+        -ray_dir.x * sin + ray_dir.y * cos,
+    );
+
+    let half = rect_size / 2.0;
+
+    let mut tmin = -f32::INFINITY;
+    let mut tmax = f32::INFINITY;
+
+    for i in 0..2 {
+        let origin = if i == 0 { local_origin.x } else { local_origin.y };
+        let dir = if i == 0 { local_dir.x } else { local_dir.y };
+        let min = if i == 0 { -half.x } else { -half.y };
+        let max = if i == 0 { half.x } else { half.y };
+
+        if dir.abs() < 0.0001 {
+            if origin < min || origin > max {
+                return None;
+            }
+        } else {
+            let t1 = (min - origin) / dir;
+            let t2 = (max - origin) / dir;
+
+            let t_low = t1.min(t2);
+            let t_high = t1.max(t2);
+
+            tmin = tmin.max(t_low);
+            tmax = tmax.min(t_high);
+
+            if tmin > tmax {
+                return None;
+            }
+        }
+    }
+
+    if tmin >= 0.0 {
+        Some(tmin)
+    } else {
+        None
     }
 }
