@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
 use rusqlite::{Connection, params};
+use bevy::hierarchy::Parent;
 
 // ==================== CONFIGURATION ====================
 const CAR_COUNT: usize = 1;
@@ -139,8 +140,8 @@ fn setup(mut commands: Commands) {
 
     spawn_complex_track(&mut commands);
     spawn_starting_line(&mut commands);
-    spawn_checkpoint(&mut commands, Vec2::new(0.0, -180.0), 0);
-    spawn_checkpoint(&mut commands, Vec2::new(0.0, 220.0), 1);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, -215.0), 0);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, 230.0), 1);
 }
 
 fn spawn_checkpoint(commands: &mut Commands, pos: Vec2, id: usize) {
@@ -149,7 +150,7 @@ fn spawn_checkpoint(commands: &mut Commands, pos: Vec2, id: usize) {
         SpriteBundle {
             sprite: Sprite {
                 color: Color::BLUE,
-                custom_size: Some(Vec2::new(120.0, 10.0)),
+                custom_size: Some(Vec2::new(10.0, 100.0)),
                 ..default()
             },
             transform: Transform::from_translation(pos.extend(0.0)),
@@ -400,85 +401,102 @@ fn handle_boundary_collisions(
 }
 
 fn spawn_rays(commands: &mut Commands, car_entity: Entity) {
-    // 12 radial
-    for i in 0..RADIAL_RAYS {
-        let angle = i as f32 / RADIAL_RAYS as f32 * 2.0 * PI;
-        commands.spawn((
-            RaySensor { angle, distance: 0.0 },
-            SpriteBundle {
-                sprite: Sprite {
-                    color: Color::YELLOW,
-                    custom_size: Some(Vec2::new(2.0, 2.0)),
+    commands.entity(car_entity).with_children(|parent| {
+
+        // Radial rays
+        for i in 0..RADIAL_RAYS {
+            let angle = i as f32 / RADIAL_RAYS as f32 * 2.0 * PI;
+
+            parent.spawn((
+                RaySensor {
+                    angle,
+                    distance: 0.0,
+                },
+                SpriteBundle {
+                    sprite: Sprite {
+                        color: Color::RED,
+                        custom_size: Some(Vec2::new(2.0, 1.0)), // height = 1 !!!
+                        ..default()
+                    },
+                    transform: Transform {
+                        translation: Vec3::ZERO,
+                        rotation: Quat::from_rotation_z(angle),
+                        scale: Vec3::ONE,
+                    },
                     ..default()
                 },
-                ..default()
-            },
-        )).set_parent(car_entity);
-    }
+            ));
+        }
 
-    // Forward focused rays
-    for i in 0..FORWARD_RAYS {
-        let spread = PI / 3.0;
-        let angle = -spread/2.0 + i as f32/(FORWARD_RAYS-1) as f32 * spread;
+        // Forward rays
+        for i in 0..FORWARD_RAYS {
+            let spread = PI / 3.0;
+            let angle =
+                -spread / 2.0 + i as f32 / (FORWARD_RAYS - 1) as f32 * spread;
 
-        commands.spawn((
-            RaySensor { angle, distance: 0.0 },
-            SpriteBundle {
-                sprite: Sprite {
-                    color: Color::ORANGE,
-                    custom_size: Some(Vec2::new(2.0, 2.0)),
+            parent.spawn((
+                RaySensor {
+                    angle,
+                    distance: 0.0,
+                },
+                SpriteBundle {
+                    sprite: Sprite {
+                        color: Color::ORANGE,
+                        custom_size: Some(Vec2::new(2.0, 1.0)), // height = 1 !!!
+                        ..default()
+                    },
+                    transform: Transform {
+                        translation: Vec3::ZERO,
+                        rotation: Quat::from_rotation_z(angle),
+                        scale: Vec3::ONE,
+                    },
                     ..default()
                 },
-                ..default()
-            },
-        )).set_parent(car_entity);
-    }
+            ));
+        }
+    });
 }
 
 fn update_rays(
     mut ray_query: Query<
-        (&mut RaySensor, &mut Transform, &Parent),
+        (&mut RaySensor, &mut Transform, &GlobalTransform, &Parent),
         (Without<Car>, Without<TrackBoundary>)
->   ,
-
-    car_query: Query<&Transform, With<Car>>,
-
+    >,
+    car_query: Query<&GlobalTransform, With<Car>>,
     boundary_query: Query<(&Transform, &TrackBoundary)>,
 ) {
-    for (mut ray, mut ray_transform, parent) in ray_query.iter_mut() {
-        if let Ok(car_transform) = car_query.get(parent.get()) {
-            let car_pos = car_transform.translation.truncate();
-            let forward = (car_transform.rotation * Vec3::Y).truncate();
+    for (mut ray, mut local_transform, global_transform, parent) in ray_query.iter_mut() {
 
-            let ray_dir = Quat::from_rotation_z(ray.angle)
-                .mul_vec3(forward.extend(0.0))
-                .truncate()
-                .normalize();
+        // Get car center (true ray origin)
+        let car_global = car_query.get(parent.get()).unwrap();
+        let origin = car_global.translation().truncate();
 
-            let mut min_dist = MAX_RAY_DISTANCE;
+        // Ray direction from sprite rotation
+        let direction = global_transform.up().truncate().normalize();
 
-            for (b_transform, b_size) in boundary_query.iter() {
-                let hit = ray_rect_intersection(
-                    car_pos,
-                    ray_dir,
-                    b_transform,
-                    b_size.size
-                );
+        // 🔥 THIS WAS MISSING
+        let mut min_dist = MAX_RAY_DISTANCE;
 
-                if let Some(d) = hit {
-                    if d < min_dist {
-                        min_dist = d;
-                    }
+        // Find nearest boundary hit
+        for (b_transform, b_size) in boundary_query.iter() {
+            if let Some(d) = ray_rect_intersection(
+                origin,
+                direction,
+                b_transform,
+                b_size.size,
+            ) {
+                if d < min_dist {
+                    min_dist = d;
                 }
             }
-
-            ray.distance = min_dist;
-
-            ray_transform.translation =
-                (ray_dir * min_dist).extend(0.0);
-
-            ray_transform.scale = Vec3::new(1.0, min_dist, 1.0);
         }
+
+        // Store sensor value
+        ray.distance = min_dist;
+
+        // Visual representation only
+        local_transform.scale.y = min_dist;
+        local_transform.translation.y = min_dist / 2.0;
     }
 }
 
