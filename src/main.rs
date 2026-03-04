@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use rusqlite::{Connection, params};
+use bevy::hierarchy::Parent;
 
 // ==================== CONFIGURATION ====================
 const CAR_COUNT: usize = 1;
@@ -127,6 +128,8 @@ fn setup(mut commands: Commands) {
     spawn_starting_line(&mut commands);
     spawn_checkpoint(&mut commands, Vec2::new(0.0, -215.0), 0);
     spawn_checkpoint(&mut commands, Vec2::new(0.0, 230.0), 1);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, -215.0), 0);
+    spawn_checkpoint(&mut commands, Vec2::new(0.0, 230.0), 1);
 }
 
 fn spawn_checkpoint(commands: &mut Commands, pos: Vec2, id: usize) {
@@ -135,6 +138,7 @@ fn spawn_checkpoint(commands: &mut Commands, pos: Vec2, id: usize) {
         SpriteBundle {
             sprite: Sprite {
                 color: Color::BLUE,
+                custom_size: Some(Vec2::new(10.0, 100.0)),
                 custom_size: Some(Vec2::new(10.0, 100.0)),
                 ..default()
             },
