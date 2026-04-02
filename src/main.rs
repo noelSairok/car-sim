@@ -1,16 +1,10 @@
 use bevy::prelude::*;
-use std::f32::consts::PI;
 use rusqlite::{Connection, params};
-use bevy::hierarchy::Parent;
 
 // ==================== CONFIGURATION ====================
 const CAR_COUNT: usize = 1;
 const WINDOW_WIDTH: f32 = 1280.0;
 const WINDOW_HEIGHT: f32 = 720.0;
-
-const MAX_RAY_DISTANCE: f32 = 600.0;
-const RADIAL_RAYS: usize = 12;
-const FORWARD_RAYS: usize = 6;
 
 const BOUNDARY_THICKNESS: f32 = 12.0;
 const CAR_WIDTH: f32 = 30.0;
@@ -20,12 +14,6 @@ const CAR_RADIUS: f32 = 25.0;
 const START_POSITION: Vec2 = Vec2::new(-440.0, 0.0);
 const START_ROTATION: f32 = 0.0;
 // =======================================================
-
-#[derive(Component)]
-struct RaySensor {
-    angle: f32,
-    distance: f32,
-}
 
 #[derive(Component)]
 struct Checkpoint {
@@ -88,7 +76,6 @@ fn main() {
         .add_systems(Update, (
             car_physics,
             handle_boundary_collisions,
-            update_rays,
             reward_system,
             log_ai_state,
         ))
@@ -116,7 +103,7 @@ fn setup(mut commands: Commands) {
 
         
 
-        let car_entity = commands.spawn((
+        let _car_entity = commands.spawn((
             SpriteBundle {
                 sprite: Sprite {
                     color,
@@ -133,9 +120,7 @@ fn setup(mut commands: Commands) {
                 skid_timer: 0.0,
                 car_id: i,
             },
-        )).id();
-
-        spawn_rays(&mut commands, car_entity);
+        )        ).id();
     }
 
     spawn_complex_track(&mut commands);
@@ -400,106 +385,6 @@ fn handle_boundary_collisions(
     }
 }
 
-fn spawn_rays(commands: &mut Commands, car_entity: Entity) {
-    commands.entity(car_entity).with_children(|parent| {
-
-        // Radial rays
-        for i in 0..RADIAL_RAYS {
-            let angle = i as f32 / RADIAL_RAYS as f32 * 2.0 * PI;
-
-            parent.spawn((
-                RaySensor {
-                    angle,
-                    distance: 0.0,
-                },
-                SpriteBundle {
-                    sprite: Sprite {
-                        color: Color::RED,
-                        custom_size: Some(Vec2::new(2.0, 1.0)), // height = 1 !!!
-                        ..default()
-                    },
-                    transform: Transform {
-                        translation: Vec3::ZERO,
-                        rotation: Quat::from_rotation_z(angle),
-                        scale: Vec3::ONE,
-                    },
-                    ..default()
-                },
-            ));
-        }
-
-        // Forward rays
-        for i in 0..FORWARD_RAYS {
-            let spread = PI / 3.0;
-            let angle =
-                -spread / 2.0 + i as f32 / (FORWARD_RAYS - 1) as f32 * spread;
-
-            parent.spawn((
-                RaySensor {
-                    angle,
-                    distance: 0.0,
-                },
-                SpriteBundle {
-                    sprite: Sprite {
-                        color: Color::ORANGE,
-                        custom_size: Some(Vec2::new(2.0, 1.0)), // height = 1 !!!
-                        ..default()
-                    },
-                    transform: Transform {
-                        translation: Vec3::ZERO,
-                        rotation: Quat::from_rotation_z(angle),
-                        scale: Vec3::ONE,
-                    },
-                    ..default()
-                },
-            ));
-        }
-    });
-}
-
-fn update_rays(
-    mut ray_query: Query<
-        (&mut RaySensor, &mut Transform, &GlobalTransform, &Parent),
-        (Without<Car>, Without<TrackBoundary>)
-    >,
-    car_query: Query<&GlobalTransform, With<Car>>,
-    boundary_query: Query<(&Transform, &TrackBoundary)>,
-) {
-    for (mut ray, mut local_transform, global_transform, parent) in ray_query.iter_mut() {
-
-        // Get car center (true ray origin)
-        let car_global = car_query.get(parent.get()).unwrap();
-        let origin = car_global.translation().truncate();
-
-        // Ray direction from sprite rotation
-        let direction = global_transform.up().truncate().normalize();
-
-        // 🔥 THIS WAS MISSING
-        let mut min_dist = MAX_RAY_DISTANCE;
-
-        // Find nearest boundary hit
-        for (b_transform, b_size) in boundary_query.iter() {
-            if let Some(d) = ray_rect_intersection(
-                origin,
-                direction,
-                b_transform,
-                b_size.size,
-            ) {
-                if d < min_dist {
-                    min_dist = d;
-                }
-            }
-        }
-
-        // Store sensor value
-        ray.distance = min_dist;
-
-        // Visual representation only
-        local_transform.scale.y = min_dist;
-        local_transform.translation.y = min_dist / 2.0;
-    }
-}
-
 fn reward_system(
     mut reward_state: ResMut<RewardState>,
     mut car_query: Query<(&Transform, &mut Car)>,
@@ -541,68 +426,5 @@ fn log_ai_state(
                 0.0
             ],
         ).unwrap();
-    }
-}
-
-fn ray_rect_intersection(
-    ray_origin: Vec2,
-    ray_dir: Vec2,
-    rect_transform: &Transform,
-    rect_size: Vec2,
-) -> Option<f32> {
-
-    let rect_pos = rect_transform.translation.truncate();
-    let rotation = rect_transform.rotation.to_euler(EulerRot::XYZ).2;
-
-    let cos = rotation.cos();
-    let sin = rotation.sin();
-
-    // Transform ray into rectangle local space
-    let rel = ray_origin - rect_pos;
-    let local_origin = Vec2::new(
-        rel.x * cos + rel.y * sin,
-        -rel.x * sin + rel.y * cos,
-    );
-
-    let local_dir = Vec2::new(
-        ray_dir.x * cos + ray_dir.y * sin,
-        -ray_dir.x * sin + ray_dir.y * cos,
-    );
-
-    let half = rect_size / 2.0;
-
-    let mut tmin = -f32::INFINITY;
-    let mut tmax = f32::INFINITY;
-
-    for i in 0..2 {
-        let origin = if i == 0 { local_origin.x } else { local_origin.y };
-        let dir = if i == 0 { local_dir.x } else { local_dir.y };
-        let min = if i == 0 { -half.x } else { -half.y };
-        let max = if i == 0 { half.x } else { half.y };
-
-        if dir.abs() < 0.0001 {
-            if origin < min || origin > max {
-                return None;
-            }
-        } else {
-            let t1 = (min - origin) / dir;
-            let t2 = (max - origin) / dir;
-
-            let t_low = t1.min(t2);
-            let t_high = t1.max(t2);
-
-            tmin = tmin.max(t_low);
-            tmax = tmax.min(t_high);
-
-            if tmin > tmax {
-                return None;
-            }
-        }
-    }
-
-    if tmin >= 0.0 {
-        Some(tmin)
-    } else {
-        None
     }
 }
